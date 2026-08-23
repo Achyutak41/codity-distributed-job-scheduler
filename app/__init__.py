@@ -1,10 +1,11 @@
 from flask import Flask
 
 from .extensions import db
-from .models import User, Organization, Membership, Project
+from .models import User, Organization, Membership, Project, Queue
 from .auth import auth_bp
 from .projects import project_bp
 from .organizations import organization_bp
+from .queues import queue_bp
 
 
 def create_app():
@@ -22,6 +23,7 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
     app.register_blueprint(organization_bp)
+    app.register_blueprint(queue_bp)
 
     @app.route("/")
     def home():

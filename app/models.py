@@ -57,6 +57,36 @@ class Organization(db.Model):
         cascade="all, delete-orphan"
     )
 
+class Queue(db.Model):
+    __tablename__ = "queues"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    project_id = db.Column(
+        db.String(36),
+        db.ForeignKey("projects.id"),
+        nullable=False
+    )
+
+    name = db.Column(
+        db.String(150),
+        nullable=False
+    )
+
+    paused = db.Column(
+        db.Boolean,
+        default=False,
+        nullable=False
+    )
+
+    project = db.relationship(
+        "Project",
+        back_populates="queues"
+    )
 
 class Membership(db.Model):
     __tablename__ = "memberships"
@@ -113,3 +143,9 @@ class Project(db.Model):
         "Organization",
         back_populates="projects"
     )
+
+    queues = db.relationship(
+    "Queue",
+    back_populates="project",
+    cascade="all, delete-orphan"
+)
