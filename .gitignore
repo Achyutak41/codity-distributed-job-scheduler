@@ -67,4 +67,4 @@ dist/
 *.log
 logs
 
-app/new.txt 
+tests/new.txt 

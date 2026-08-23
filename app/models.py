@@ -1,5 +1,5 @@
 import uuid
-
+import datetime
 from .extensions import db
 
 
@@ -88,6 +88,12 @@ class Queue(db.Model):
         back_populates="queues"
     )
 
+    jobs = db.relationship(
+    "Job",
+    back_populates="queue",
+    cascade="all, delete-orphan"
+)
+
 class Membership(db.Model):
     __tablename__ = "memberships"
 
@@ -149,3 +155,79 @@ class Project(db.Model):
     back_populates="project",
     cascade="all, delete-orphan"
 )
+
+class Job(db.Model):
+    __tablename__ = "jobs"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    queue_id = db.Column(
+        db.String(36),
+        db.ForeignKey("queues.id"),
+        nullable=False
+    )
+
+    job_type = db.Column(
+        db.String(100),
+        nullable=False
+    )
+
+    payload = db.Column(
+        db.JSON,
+        nullable=False
+    )
+
+    priority = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    status = db.Column(
+        db.String(30),
+        default="scheduled",
+        nullable=False
+    )
+
+    attempts = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    assigned_worker_id = db.Column(
+        db.String(36),
+        nullable=True
+    )
+
+    scheduled_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
+
+    last_error = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.datetime.utcnow
+    )
+
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow
+    )
+
+    queue = db.relationship(
+        "Queue",
+        back_populates="jobs"
+    )
