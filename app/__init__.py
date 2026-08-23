@@ -1,7 +1,7 @@
 from flask import Flask
 
 from .extensions import db
-from .models import User, Organization, Membership, Project, Queue, Job 
+from .models import User, Organization, Membership, Project, Queue, Job, Worker 
 from .auth import auth_bp
 from .projects import project_bp
 from .organizations import organization_bp

@@ -201,6 +201,7 @@ class Job(db.Model):
 
     assigned_worker_id = db.Column(
         db.String(36),
+        db.ForeignKey("workers.id"),
         nullable=True
     )
 
@@ -230,4 +231,35 @@ class Job(db.Model):
     queue = db.relationship(
         "Queue",
         back_populates="jobs"
+    )
+
+    assigned_worker = db.relationship(
+        "Worker",
+        back_populates="jobs"
+    )
+
+class Worker(db.Model):
+    __tablename__ = "workers"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    name = db.Column(
+        db.String(100),
+        unique=True,
+        nullable=False
+    )
+
+    status = db.Column(
+        db.String(30),
+        default="online",
+        nullable=False
+    )
+
+    jobs = db.relationship(
+        "Job",
+        back_populates="assigned_worker"
     )
