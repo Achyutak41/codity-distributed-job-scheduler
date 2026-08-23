@@ -51,6 +51,12 @@ class Organization(db.Model):
         cascade="all, delete-orphan"
     )
 
+    projects = db.relationship(
+        "Project",
+        back_populates="organization",
+        cascade="all, delete-orphan"
+    )
+
 
 class Membership(db.Model):
     __tablename__ = "memberships"
@@ -81,4 +87,29 @@ class Membership(db.Model):
     organization = db.relationship(
         "Organization",
         back_populates="memberships"
+    )
+
+class Project(db.Model):
+    __tablename__ = "projects"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    organization_id = db.Column(
+        db.String(36),
+        db.ForeignKey("organizations.id"),
+        nullable=False
+    )
+
+    name = db.Column(
+        db.String(150),
+        nullable=False
+    )
+
+    organization = db.relationship(
+        "Organization",
+        back_populates="projects"
     )

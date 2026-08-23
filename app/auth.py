@@ -82,8 +82,41 @@ def login():
     current_app.config["JWT_SECRET_KEY"],
     algorithm="HS256"
     )
-    
+
     return {
     "message": "Login successful",
     "access_token": token
 }, 200
+
+def get_current_user():
+    auth_header = request.headers.get("Authorization")
+
+    if not auth_header:
+        return None
+
+    parts = auth_header.split()
+
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+
+    token = parts[1]
+
+    try:
+        payload = jwt.decode(
+            token,
+            current_app.config["JWT_SECRET_KEY"],
+            algorithms=["HS256"]
+        )
+
+        user_id = payload.get("user_id")
+
+        if not user_id:
+            return None
+
+        return User.query.get(user_id)
+
+    except jwt.ExpiredSignatureError:
+        return None
+
+    except jwt.InvalidTokenError:
+        return None
