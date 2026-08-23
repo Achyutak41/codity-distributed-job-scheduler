@@ -10,6 +10,7 @@ from .models import (
     Queue,
     Job,
     Worker,
+    WorkerHeartbeat,
     JobExecution,
     JobLog
 )

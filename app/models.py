@@ -8,11 +8,12 @@ def utcnow():
     """
     Return current UTC time as a naive datetime.
 
-    SQLite is currently using naive DateTime columns in this project.
+    SQLite DateTime columns in this project currently
+    use naive UTC datetime values.
     """
-    return datetime.datetime.now(datetime.timezone.utc).replace(
-        tzinfo=None
-    )
+    return datetime.datetime.now(
+        datetime.timezone.utc
+    ).replace(tzinfo=None)
 
 
 class User(db.Model):
@@ -326,6 +327,41 @@ class Worker(db.Model):
         "JobExecution",
         back_populates="worker",
         cascade="all, delete-orphan"
+    )
+
+    heartbeat = db.relationship(
+        "WorkerHeartbeat",
+        back_populates="worker",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+
+class WorkerHeartbeat(db.Model):
+    __tablename__ = "worker_heartbeats"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    worker_id = db.Column(
+        db.String(36),
+        db.ForeignKey("workers.id"),
+        unique=True,
+        nullable=False
+    )
+
+    last_seen_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=utcnow
+    )
+
+    worker = db.relationship(
+        "Worker",
+        back_populates="heartbeat"
     )
 
 
