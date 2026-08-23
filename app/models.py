@@ -4,6 +4,17 @@ import datetime
 from .extensions import db
 
 
+def utcnow():
+    """
+    Return current UTC time as a naive datetime.
+
+    SQLite is currently using naive DateTime columns in this project.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).replace(
+        tzinfo=None
+    )
+
+
 class User(db.Model):
     __tablename__ = "users"
 
@@ -210,6 +221,29 @@ class Job(db.Model):
         nullable=False
     )
 
+    max_attempts = db.Column(
+        db.Integer,
+        default=3,
+        nullable=False
+    )
+
+    retry_policy = db.Column(
+        db.String(30),
+        default="exponential",
+        nullable=False
+    )
+
+    retry_delay = db.Column(
+        db.Integer,
+        default=2,
+        nullable=False
+    )
+
+    next_retry_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
+
     assigned_worker_id = db.Column(
         db.String(36),
         db.ForeignKey("workers.id"),
@@ -229,14 +263,14 @@ class Job(db.Model):
     created_at = db.Column(
         db.DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow
+        default=utcnow
     )
 
     updated_at = db.Column(
         db.DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow,
-        onupdate=datetime.datetime.utcnow
+        default=utcnow,
+        onupdate=utcnow
     )
 
     queue = db.relationship(
@@ -329,7 +363,7 @@ class JobExecution(db.Model):
     started_at = db.Column(
         db.DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow
+        default=utcnow
     )
 
     finished_at = db.Column(
@@ -394,7 +428,7 @@ class JobLog(db.Model):
     created_at = db.Column(
         db.DateTime,
         nullable=False,
-        default=datetime.datetime.utcnow
+        default=utcnow
     )
 
     job = db.relationship(
