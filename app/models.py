@@ -7,10 +7,8 @@ from .extensions import db
 def utcnow():
     """
     Return current UTC time as a naive datetime.
-
-    SQLite DateTime columns in this project currently
-    use naive UTC datetime values.
     """
+
     return datetime.datetime.now(
         datetime.timezone.utc
     ).replace(tzinfo=None)

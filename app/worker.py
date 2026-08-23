@@ -1,6 +1,7 @@
 import time
 import datetime
 import argparse
+import threading
 
 from sqlalchemy import or_
 
@@ -9,33 +10,234 @@ from .extensions import db
 from .models import (
     Job,
     Worker,
+    WorkerHeartbeat,
     JobExecution,
     JobLog
 )
 
 
-def utcnow():
-    """
-    Return current UTC time as a naive datetime.
+HEARTBEAT_INTERVAL = 5
 
-    Our SQLite DateTime columns currently use naive values.
-    """
+DEAD_WORKER_TIMEOUT = 15
+
+STALE_JOB_TIMEOUT = 20
+
+
+def utcnow():
     return datetime.datetime.now(
         datetime.timezone.utc
     ).replace(tzinfo=None)
 
 
-# ---------------------------------------------------------
-# Job Claiming
-# ---------------------------------------------------------
+# =========================================================
+# HEARTBEAT
+# =========================================================
+
+def send_heartbeat(worker_id):
+
+    heartbeat = (
+        WorkerHeartbeat.query
+        .filter_by(
+            worker_id=worker_id
+        )
+        .first()
+    )
+
+    if heartbeat is None:
+
+        heartbeat = WorkerHeartbeat(
+            worker_id=worker_id,
+            last_seen_at=utcnow()
+        )
+
+        db.session.add(
+            heartbeat
+        )
+
+    else:
+
+        heartbeat.last_seen_at = utcnow()
+
+    worker = db.session.get(
+        Worker,
+        worker_id
+    )
+
+    if worker:
+
+        worker.status = "online"
+
+    db.session.commit()
+
+
+def heartbeat_loop(
+    app,
+    worker_id,
+    stop_event
+):
+
+    while not stop_event.is_set():
+
+        try:
+
+            with app.app_context():
+
+                send_heartbeat(
+                    worker_id
+                )
+
+                print(
+                    f"[HEARTBEAT] "
+                    f"worker={worker_id} "
+                    f"alive"
+                )
+
+        except Exception as exc:
+
+            print(
+                f"[HEARTBEAT ERROR] "
+                f"{exc}"
+            )
+
+        stop_event.wait(
+            HEARTBEAT_INTERVAL
+        )
+
+
+# =========================================================
+# DEAD WORKER DETECTION
+# =========================================================
+
+def detect_dead_workers():
+
+    cutoff = (
+        utcnow()
+        - datetime.timedelta(
+            seconds=DEAD_WORKER_TIMEOUT
+        )
+    )
+
+    workers = Worker.query.all()
+
+    dead_workers = []
+
+    for worker in workers:
+
+        heartbeat = worker.heartbeat
+
+        if heartbeat is None:
+            continue
+
+        if heartbeat.last_seen_at < cutoff:
+
+            if worker.status != "offline":
+
+                worker.status = "offline"
+
+                dead_workers.append(
+                    worker
+                )
+
+                print(
+                    f"[DEAD WORKER] "
+                    f"{worker.name} "
+                    f"marked offline"
+                )
+
+    if dead_workers:
+
+        db.session.commit()
+
+    return dead_workers
+
+
+# =========================================================
+# STALE JOB RECOVERY
+# =========================================================
+
+def recover_stale_jobs():
+
+    """
+    Find jobs that are still marked as running
+    or claimed by workers whose heartbeat is dead.
+
+    Those jobs become eligible for another worker.
+    """
+
+    cutoff = (
+        utcnow()
+        - datetime.timedelta(
+            seconds=DEAD_WORKER_TIMEOUT
+        )
+    )
+
+    stale_jobs = (
+        Job.query
+        .join(
+            Worker,
+            Job.assigned_worker_id
+            == Worker.id
+        )
+        .join(
+            WorkerHeartbeat,
+            WorkerHeartbeat.worker_id
+            == Worker.id
+        )
+        .filter(
+            Job.status.in_(
+                ["claimed", "running"]
+            ),
+
+            WorkerHeartbeat.last_seen_at
+            < cutoff
+        )
+        .all()
+    )
+
+    recovered_count = 0
+
+    for job in stale_jobs:
+
+        old_worker = job.assigned_worker_id
+
+        print(
+            f"[STALE JOB] "
+            f"Job {job.id} "
+            f"was owned by dead worker "
+            f"{old_worker}"
+        )
+
+        job.status = "scheduled"
+
+        job.assigned_worker_id = None
+
+        job.next_retry_at = utcnow()
+
+        job.last_error = (
+            "Worker became unavailable "
+            "during execution"
+        )
+
+        recovered_count += 1
+
+    if recovered_count:
+
+        db.session.commit()
+
+        print(
+            f"[RECOVERY] "
+            f"Recovered {recovered_count} "
+            f"stale job(s)"
+        )
+
+    return recovered_count
+
+
+# =========================================================
+# JOB CLAIMING
+# =========================================================
 
 def claim_next_job(worker_id):
-    """
-    Find one eligible scheduled job and atomically claim it.
-
-    Only one worker should successfully change the job
-    from scheduled -> claimed.
-    """
 
     now = utcnow()
 
@@ -43,40 +245,52 @@ def claim_next_job(worker_id):
         Job.query
         .filter(
             Job.status == "scheduled",
+
             or_(
                 Job.next_retry_at.is_(None),
+
                 Job.next_retry_at <= now
             )
         )
         .order_by(
             Job.priority.desc(),
+
             Job.created_at.asc()
         )
         .first()
     )
 
     if job is None:
+
         return None
 
     print(
-        f"Found scheduled job: {job.id}"
+        f"Found scheduled job: "
+        f"{job.id}"
     )
 
     updated = (
         db.session.query(Job)
         .filter(
             Job.id == job.id,
+
             Job.status == "scheduled",
+
             or_(
                 Job.next_retry_at.is_(None),
+
                 Job.next_retry_at <= now
             )
         )
         .update(
             {
-                Job.status: "claimed",
-                Job.assigned_worker_id: worker_id
+                Job.status:
+                    "claimed",
+
+                Job.assigned_worker_id:
+                    worker_id
             },
+
             synchronize_session=False
         )
     )
@@ -84,32 +298,25 @@ def claim_next_job(worker_id):
     db.session.commit()
 
     print(
-        f"Claim update result: {updated}"
+        f"Claim update result: "
+        f"{updated}"
     )
 
     if updated == 0:
+
         return None
 
-    return Job.query.get(job.id)
+    return db.session.get(
+        Job,
+        job.id
+    )
 
 
-# ---------------------------------------------------------
-# Job Execution
-# ---------------------------------------------------------
+# =========================================================
+# JOB EXECUTION
+# =========================================================
 
 def execute_job(job):
-    """
-    Simulate execution of a job.
-
-    fail_test:
-        Always fails.
-
-    fail_once:
-        Fails on the first attempt and succeeds afterward.
-
-    Any other job type:
-        Succeeds normally.
-    """
 
     print(
         f"Executing job {job.id} "
@@ -117,39 +324,28 @@ def execute_job(job):
         f"payload={job.payload}"
     )
 
-    # ---------------------------------------------
-    # Testing: always fail
-    # ---------------------------------------------
-
     if job.job_type == "fail_test":
+
         raise Exception(
             "Intentional test failure"
         )
 
-    # ---------------------------------------------
-    # Testing: fail once
-    # ---------------------------------------------
-
     if job.job_type == "fail_once":
 
-        # Store the number of executions using
-        # the database execution history.
         previous_attempts = (
             JobExecution.query
             .filter(
-                JobExecution.job_id == job.id
+                JobExecution.job_id
+                == job.id
             )
             .count()
         )
 
         if previous_attempts == 1:
+
             raise Exception(
                 "Intentional first-attempt failure"
             )
-
-    # ---------------------------------------------
-    # Normal job simulation
-    # ---------------------------------------------
 
     time.sleep(2)
 
@@ -158,9 +354,9 @@ def execute_job(job):
     )
 
 
-# ---------------------------------------------------------
-# Job Logging
-# ---------------------------------------------------------
+# =========================================================
+# LOGGING
+# =========================================================
 
 def add_log(
     job,
@@ -168,82 +364,93 @@ def add_log(
     level,
     message
 ):
-    """
-    Create a JobLog record.
-    """
 
     log = JobLog(
         job_id=job.id,
+
         execution_id=(
             execution.id
             if execution
             else None
         ),
+
         level=level,
+
         message=message
     )
 
     db.session.add(log)
 
 
-# ---------------------------------------------------------
-# Retry Backoff
-# ---------------------------------------------------------
+# =========================================================
+# RETRY BACKOFF
+# =========================================================
 
 def calculate_retry_delay(job):
-    """
-    Calculate the delay before the next retry.
-
-    fixed:
-        delay = retry_delay
-
-    linear:
-        delay = retry_delay * attempts
-
-    exponential:
-        delay = retry_delay * 2^(attempts - 1)
-    """
 
     if job.retry_policy == "fixed":
+
         return job.retry_delay
 
     if job.retry_policy == "linear":
+
         return (
             job.retry_delay
             * job.attempts
         )
 
     if job.retry_policy == "exponential":
+
         return (
             job.retry_delay
-            * (2 ** (job.attempts - 1))
+            * (
+                2
+                ** (job.attempts - 1)
+            )
         )
 
-    # Safety fallback
     return job.retry_delay
 
 
-# ---------------------------------------------------------
-# Worker Loop
-# ---------------------------------------------------------
+# =========================================================
+# WORKER LOOP
+# =========================================================
 
-def run_worker(worker_id, worker_name):
-    """
-    Continuously poll for scheduled jobs.
-    """
+def run_worker(
+    worker_id,
+    worker_name
+):
 
     print(
         f"Worker started: "
-        f"{worker_name} ({worker_id})"
+        f"{worker_name} "
+        f"({worker_id})"
     )
 
+    loop_counter = 0
+
     while True:
+
+        loop_counter += 1
+
+        # -------------------------------------------------
+        # Every few cycles check dead workers
+        # -------------------------------------------------
+
+        if loop_counter % 3 == 0:
+
+            detect_dead_workers()
+
+            recover_stale_jobs()
+
+        # -------------------------------------------------
+        # Claim job
+        # -------------------------------------------------
 
         job = claim_next_job(
             worker_id
         )
 
-        # No available job
         if job is None:
 
             time.sleep(2)
@@ -254,35 +461,25 @@ def run_worker(worker_id, worker_name):
 
         try:
 
-            # -----------------------------------------
-            # Increment attempt
-            # -----------------------------------------
-
             job.attempts += 1
-
-            # -----------------------------------------
-            # Create execution history
-            # -----------------------------------------
 
             execution = JobExecution(
                 job_id=job.id,
+
                 worker_id=worker_id,
+
                 attempt=job.attempts,
+
                 status="running",
+
                 started_at=utcnow()
             )
 
-            db.session.add(execution)
-
-            # -----------------------------------------
-            # Update Job
-            # -----------------------------------------
+            db.session.add(
+                execution
+            )
 
             job.status = "running"
-
-            # -----------------------------------------
-            # Log start
-            # -----------------------------------------
 
             add_log(
                 job,
@@ -293,15 +490,7 @@ def run_worker(worker_id, worker_name):
 
             db.session.commit()
 
-            # -----------------------------------------
-            # Execute
-            # -----------------------------------------
-
             execute_job(job)
-
-            # -----------------------------------------
-            # Successful execution
-            # -----------------------------------------
 
             execution.status = "completed"
 
@@ -328,12 +517,9 @@ def run_worker(worker_id, worker_name):
         except Exception as exc:
 
             print(
-                f"Job {job.id} failed: {exc}"
+                f"Job {job.id} "
+                f"failed: {exc}"
             )
-
-            # -----------------------------------------
-            # Record failed execution
-            # -----------------------------------------
 
             if execution is not None:
 
@@ -343,17 +529,12 @@ def run_worker(worker_id, worker_name):
 
                 execution.error = str(exc)
 
-            # -----------------------------------------
-            # Save latest error
-            # -----------------------------------------
-
             job.last_error = str(exc)
 
-            # -----------------------------------------
-            # Determine whether retry is possible
-            # -----------------------------------------
-
-            if job.attempts < job.max_attempts:
+            if (
+                job.attempts
+                < job.max_attempts
+            ):
 
                 delay = calculate_retry_delay(
                     job
@@ -379,18 +560,12 @@ def run_worker(worker_id, worker_name):
                 )
 
                 print(
-                    f"Retrying job {job.id} "
-                    f"in {delay} seconds "
-                    f"(attempt "
-                    f"{job.attempts + 1}"
-                    f"/{job.max_attempts})"
+                    f"Retrying job "
+                    f"{job.id} "
+                    f"in {delay} seconds"
                 )
 
             else:
-
-                # -------------------------------------
-                # Retry limit reached
-                # -------------------------------------
 
                 job.status = "failed"
 
@@ -405,21 +580,21 @@ def run_worker(worker_id, worker_name):
 
                 print(
                     f"Job {job.id} "
-                    f"permanently failed after "
-                    f"{job.attempts} attempts"
+                    f"permanently failed"
                 )
 
             db.session.commit()
 
 
-# ---------------------------------------------------------
-# Worker Entry Point
-# ---------------------------------------------------------
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
-        description="Distributed Job Scheduler Worker"
+        description=
+        "Distributed Job Scheduler Worker"
     )
 
     parser.add_argument(
@@ -430,7 +605,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Import here to avoid circular imports
     from . import create_app
 
     app = create_app()
@@ -452,7 +626,9 @@ if __name__ == "__main__":
                 status="online"
             )
 
-            db.session.add(worker)
+            db.session.add(
+                worker
+            )
 
             db.session.commit()
 
@@ -462,7 +638,39 @@ if __name__ == "__main__":
 
             db.session.commit()
 
-        run_worker(
-            worker.id,
-            worker.name
+        stop_event = threading.Event()
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_loop,
+            args=(
+                app,
+                worker.id,
+                stop_event
+            ),
+            daemon=True
         )
+
+        heartbeat_thread.start()
+
+        try:
+
+            run_worker(
+                worker.id,
+                worker.name
+            )
+
+        except KeyboardInterrupt:
+
+            print(
+                "\nStopping worker..."
+            )
+
+            stop_event.set()
+
+            worker.status = "offline"
+
+            db.session.commit()
+
+            print(
+                "Worker stopped."
+            )
