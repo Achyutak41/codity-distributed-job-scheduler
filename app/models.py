@@ -5,10 +5,6 @@ from .extensions import db
 
 
 def utcnow():
-    """
-    Return current UTC time as a naive datetime.
-    """
-
     return datetime.datetime.now(
         datetime.timezone.utc
     ).replace(tzinfo=None)
@@ -259,6 +255,15 @@ class Job(db.Model):
         nullable=True
     )
 
+    # ---------------------------------------------
+    # STEP 16: IDEMPOTENCY
+    # ---------------------------------------------
+
+    idempotency_key = db.Column(
+        db.String(255),
+        nullable=True
+    )
+
     created_at = db.Column(
         db.DateTime,
         nullable=False,
@@ -472,5 +477,5 @@ class JobLog(db.Model):
 
     execution = db.relationship(
         "JobExecution",
-        back_populates="logs"
+        back_populates="execution"
     )
