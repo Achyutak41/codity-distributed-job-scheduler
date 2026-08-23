@@ -37,9 +37,17 @@ def create_queue(project_id):
         }, 404
 
     queue = Queue(
-        project_id=project.id,
-        name=name
+    project_id=project.id,
+    name=data["name"],
+    concurrency_limit=data.get(
+        "concurrency_limit",
+        1
+    ),
+    starts_per_minute=data.get(
+        "starts_per_minute",
+        60
     )
+)
 
     db.session.add(queue)
     db.session.commit()

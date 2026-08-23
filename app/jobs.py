@@ -6,7 +6,7 @@ from .models import (
     Queue,
     Job
 )
-
+import datetime
 from .auth import get_current_user
 
 
@@ -70,17 +70,12 @@ def create_job(queue_id):
         }, 409
 
     # =====================================================
-    # STEP 16: IDEMPOTENCY KEY
+    # IDEMPOTENCY
     # =====================================================
 
     idempotency_key = request.headers.get(
         "Idempotency-Key"
     )
-
-    # -----------------------------------------------------
-    # If an idempotency key was supplied, check whether
-    # this job already exists.
-    # -----------------------------------------------------
 
     if idempotency_key:
 
@@ -110,7 +105,30 @@ def create_job(queue_id):
             }, 200
 
     # =====================================================
-    # VALIDATE MAX ATTEMPTS
+    # PRIORITY
+    # =====================================================
+
+    priority = data.get(
+        "priority",
+        0
+    )
+
+    try:
+
+        priority = int(priority)
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
+        return {
+            "error":
+                "priority must be an integer"
+        }, 400
+
+    # =====================================================
+    # RETRY SETTINGS
     # =====================================================
 
     max_attempts = data.get(
@@ -141,10 +159,6 @@ def create_job(queue_id):
                 "max_attempts must be at least 1"
         }, 400
 
-    # =====================================================
-    # VALIDATE RETRY DELAY
-    # =====================================================
-
     retry_delay = data.get(
         "retry_delay",
         2
@@ -166,29 +180,16 @@ def create_job(queue_id):
                 "retry_delay must be an integer"
         }, 400
 
-    if retry_delay < 0:
-
-        return {
-            "error":
-                "retry_delay cannot be negative"
-        }, 400
-
-    # =====================================================
-    # VALIDATE RETRY POLICY
-    # =====================================================
-
     retry_policy = data.get(
         "retry_policy",
         "exponential"
     )
 
-    allowed_policies = {
+    if retry_policy not in {
         "fixed",
         "linear",
         "exponential"
-    }
-
-    if retry_policy not in allowed_policies:
+    }:
 
         return {
             "error":
@@ -199,29 +200,32 @@ def create_job(queue_id):
         }, 400
 
     # =====================================================
-    # VALIDATE PRIORITY
+    # STEP 17 — RUN AT
     # =====================================================
 
-    priority = data.get(
-        "priority",
-        0
-    )
+    run_at = None
 
-    try:
+    if data.get("run_at"):
 
-        priority = int(
-            priority
-        )
+        try:
 
-    except (
-        TypeError,
-        ValueError
-    ):
+            run_at = (
+                datetime_from_string(
+                    data["run_at"]
+                )
+            )
 
-        return {
-            "error":
-                "priority must be an integer"
-        }, 400
+        except ValueError:
+
+            return {
+                "error":
+                    (
+                        "run_at must be "
+                        "ISO datetime, "
+                        "example: "
+                        "2026-08-23T21:00:00"
+                    )
+            }, 400
 
     # =====================================================
     # CREATE JOB
@@ -243,6 +247,8 @@ def create_job(queue_id):
 
         retry_delay=retry_delay,
 
+        run_at=run_at,
+
         idempotency_key=idempotency_key
     )
 
@@ -263,6 +269,16 @@ def create_job(queue_id):
         "status":
             job.status,
 
+        "run_at":
+            (
+                job.run_at.isoformat()
+                if job.run_at
+                else None
+            ),
+
+        "priority":
+            job.priority,
+
         "max_attempts":
             job.max_attempts,
 
@@ -276,3 +292,24 @@ def create_job(queue_id):
             bool(idempotency_key)
 
     }, 201
+
+
+# =========================================================
+# DATETIME HELPER
+# =========================================================
+
+def datetime_from_string(value):
+
+    value = value.strip()
+
+    # Support:
+    # 2026-08-23T21:00:00
+    # 2026-08-23T21:00:00Z
+
+    if value.endswith("Z"):
+
+        value = value[:-1]
+
+    return datetime.datetime.fromisoformat(
+        value
+    )

@@ -9,10 +9,12 @@ from .extensions import db
 
 from .models import (
     Job,
+    Queue,
     Worker,
     WorkerHeartbeat,
     JobExecution,
-    JobLog
+    JobLog,
+    DeadLetter
 )
 
 
@@ -20,10 +22,12 @@ HEARTBEAT_INTERVAL = 5
 
 DEAD_WORKER_TIMEOUT = 15
 
-STALE_JOB_TIMEOUT = 20
+# Used by Step 18
+DEFAULT_START_WINDOW_SECONDS = 60
 
 
 def utcnow():
+
     return datetime.datetime.now(
         datetime.timezone.utc
     ).replace(tzinfo=None)
@@ -119,7 +123,7 @@ def detect_dead_workers():
 
     workers = Worker.query.all()
 
-    dead_workers = []
+    changed = False
 
     for worker in workers:
 
@@ -134,9 +138,7 @@ def detect_dead_workers():
 
                 worker.status = "offline"
 
-                dead_workers.append(
-                    worker
-                )
+                changed = True
 
                 print(
                     f"[DEAD WORKER] "
@@ -144,25 +146,97 @@ def detect_dead_workers():
                     f"marked offline"
                 )
 
-    if dead_workers:
+    if changed:
 
         db.session.commit()
 
-    return dead_workers
+
+# =========================================================
+# STEP 18
+# CONCURRENCY CHECK
+# =========================================================
+
+def get_running_count(queue_id):
+
+    return (
+        Job.query
+        .filter(
+            Job.queue_id == queue_id,
+
+            Job.status == "running"
+        )
+        .count()
+    )
+
+
+def can_start_job(queue):
+
+    # -----------------------------------------------------
+    # Queue paused?
+    # -----------------------------------------------------
+
+    if queue.paused:
+
+        return False
+
+    # -----------------------------------------------------
+    # Concurrency
+    # -----------------------------------------------------
+
+    running_count = get_running_count(
+        queue.id
+    )
+
+    if (
+        running_count
+        >= queue.concurrency_limit
+    ):
+
+        return False
+
+    # -----------------------------------------------------
+    # Per-minute start limit
+    # -----------------------------------------------------
+
+    window_start = (
+        utcnow()
+        - datetime.timedelta(
+            seconds=DEFAULT_START_WINDOW_SECONDS
+        )
+    )
+
+    recent_starts = (
+        JobExecution.query
+        .join(
+            Job,
+            JobExecution.job_id
+            == Job.id
+        )
+        .filter(
+            Job.queue_id == queue.id,
+
+            JobExecution.started_at
+            >= window_start
+        )
+        .count()
+    )
+
+    if (
+        recent_starts
+        >= queue.starts_per_minute
+    ):
+
+        return False
+
+    return True
 
 
 # =========================================================
+# STEP 15
 # STALE JOB RECOVERY
 # =========================================================
 
 def recover_stale_jobs():
-
-    """
-    Find jobs that are still marked as running
-    or claimed by workers whose heartbeat is dead.
-
-    Those jobs become eligible for another worker.
-    """
 
     cutoff = (
         utcnow()
@@ -194,17 +268,15 @@ def recover_stale_jobs():
         .all()
     )
 
-    recovered_count = 0
+    recovered = 0
 
     for job in stale_jobs:
 
-        old_worker = job.assigned_worker_id
-
         print(
             f"[STALE JOB] "
-            f"Job {job.id} "
-            f"was owned by dead worker "
-            f"{old_worker}"
+            f"{job.id} "
+            f"recovered from "
+            f"{job.assigned_worker_id}"
         )
 
         job.status = "scheduled"
@@ -214,106 +286,145 @@ def recover_stale_jobs():
         job.next_retry_at = utcnow()
 
         job.last_error = (
-            "Worker became unavailable "
-            "during execution"
+            "Recovered because "
+            "assigned worker died"
         )
 
-        recovered_count += 1
+        recovered += 1
 
-    if recovered_count:
+    if recovered:
 
         db.session.commit()
 
         print(
             f"[RECOVERY] "
-            f"Recovered {recovered_count} "
-            f"stale job(s)"
+            f"{recovered} job(s) recovered"
         )
-
-    return recovered_count
 
 
 # =========================================================
-# JOB CLAIMING
+# STEP 17
+# CLAIM ELIGIBLE JOB
 # =========================================================
 
 def claim_next_job(worker_id):
 
     now = utcnow()
 
-    job = (
+    candidate_jobs = (
         Job.query
         .filter(
             Job.status == "scheduled",
 
+            # ---------------------------------------------
+            # Retry delay
+            # ---------------------------------------------
+
             or_(
                 Job.next_retry_at.is_(None),
 
                 Job.next_retry_at <= now
+            ),
+
+            # ---------------------------------------------
+            # STEP 17: schedule
+            # ---------------------------------------------
+
+            or_(
+                Job.run_at.is_(None),
+
+                Job.run_at <= now
             )
         )
         .order_by(
+            # ---------------------------------------------
+            # STEP 18: priority
+            # ---------------------------------------------
+
             Job.priority.desc(),
 
             Job.created_at.asc()
         )
-        .first()
+        .all()
     )
 
-    if job is None:
+    for job in candidate_jobs:
 
-        return None
+        queue = db.session.get(
+            Queue,
+            job.queue_id
+        )
 
-    print(
-        f"Found scheduled job: "
-        f"{job.id}"
-    )
+        if queue is None:
 
-    updated = (
-        db.session.query(Job)
-        .filter(
-            Job.id == job.id,
+            continue
 
-            Job.status == "scheduled",
+        # -------------------------------------------------
+        # STEP 18
+        # Enforce queue limits AT CLAIM TIME
+        # -------------------------------------------------
 
-            or_(
-                Job.next_retry_at.is_(None),
+        if not can_start_job(queue):
 
-                Job.next_retry_at <= now
+            continue
+
+        print(
+            f"Found eligible job: "
+            f"{job.id}"
+        )
+
+        updated = (
+            db.session.query(Job)
+            .filter(
+                Job.id == job.id,
+
+                Job.status == "scheduled",
+
+                or_(
+                    Job.next_retry_at.is_(None),
+
+                    Job.next_retry_at <= now
+                ),
+
+                or_(
+                    Job.run_at.is_(None),
+
+                    Job.run_at <= now
+                )
+            )
+            .update(
+                {
+                    Job.status:
+                        "claimed",
+
+                    Job.assigned_worker_id:
+                        worker_id
+                },
+
+                synchronize_session=False
             )
         )
-        .update(
-            {
-                Job.status:
-                    "claimed",
 
-                Job.assigned_worker_id:
-                    worker_id
-            },
+        db.session.commit()
 
-            synchronize_session=False
-        )
-    )
+        if updated == 1:
 
-    db.session.commit()
+            print(
+                f"[CLAIMED] "
+                f"job={job.id} "
+                f"worker={worker_id}"
+            )
 
-    print(
-        f"Claim update result: "
-        f"{updated}"
-    )
+            return db.session.get(
+                Job,
+                job.id
+            )
 
-    if updated == 0:
-
-        return None
-
-    return db.session.get(
-        Job,
-        job.id
-    )
+    return None
 
 
 # =========================================================
-# JOB EXECUTION
+# EXECUTE JOB
 # =========================================================
 
 def execute_job(job):
@@ -324,11 +435,19 @@ def execute_job(job):
         f"payload={job.payload}"
     )
 
+    # -----------------------------------------------------
+    # Testing: always fail
+    # -----------------------------------------------------
+
     if job.job_type == "fail_test":
 
         raise Exception(
             "Intentional test failure"
         )
+
+    # -----------------------------------------------------
+    # Testing: fail once
+    # -----------------------------------------------------
 
     if job.job_type == "fail_once":
 
@@ -366,6 +485,7 @@ def add_log(
 ):
 
     log = JobLog(
+
         job_id=job.id,
 
         execution_id=(
@@ -379,7 +499,9 @@ def add_log(
         message=message
     )
 
-    db.session.add(log)
+    db.session.add(
+        log
+    )
 
 
 # =========================================================
@@ -413,6 +535,50 @@ def calculate_retry_delay(job):
 
 
 # =========================================================
+# STEP 19
+# DEAD LETTER
+# =========================================================
+
+def move_to_dead_letter(
+    job,
+    reason
+):
+
+    existing = (
+        DeadLetter.query
+        .filter_by(
+            job_id=job.id
+        )
+        .first()
+    )
+
+    if existing:
+
+        return
+
+    dead_letter = DeadLetter(
+
+        job_id=job.id,
+
+        reason=reason,
+
+        attempts=job.attempts,
+
+        created_at=utcnow()
+    )
+
+    db.session.add(
+        dead_letter
+    )
+
+    print(
+        f"[DEAD LETTER] "
+        f"Job {job.id} "
+        f"moved to dead-letter queue"
+    )
+
+
+# =========================================================
 # WORKER LOOP
 # =========================================================
 
@@ -434,7 +600,7 @@ def run_worker(
         loop_counter += 1
 
         # -------------------------------------------------
-        # Every few cycles check dead workers
+        # Health checks
         # -------------------------------------------------
 
         if loop_counter % 3 == 0:
@@ -444,7 +610,7 @@ def run_worker(
             recover_stale_jobs()
 
         # -------------------------------------------------
-        # Claim job
+        # Find job
         # -------------------------------------------------
 
         job = claim_next_job(
@@ -461,9 +627,18 @@ def run_worker(
 
         try:
 
+            # ---------------------------------------------
+            # Increment attempt
+            # ---------------------------------------------
+
             job.attempts += 1
 
+            # ---------------------------------------------
+            # Execution record
+            # ---------------------------------------------
+
             execution = JobExecution(
+
                 job_id=job.id,
 
                 worker_id=worker_id,
@@ -490,7 +665,15 @@ def run_worker(
 
             db.session.commit()
 
+            # ---------------------------------------------
+            # Execute
+            # ---------------------------------------------
+
             execute_job(job)
+
+            # ---------------------------------------------
+            # Success
+            # ---------------------------------------------
 
             execution.status = "completed"
 
@@ -510,18 +693,19 @@ def run_worker(
             db.session.commit()
 
             print(
-                f"Job {job.id} "
-                f"completed successfully"
+                f"[SUCCESS] "
+                f"Job {job.id} completed"
             )
 
         except Exception as exc:
 
             print(
-                f"Job {job.id} "
-                f"failed: {exc}"
+                f"[FAILURE] "
+                f"Job {job.id}: "
+                f"{exc}"
             )
 
-            if execution is not None:
+            if execution:
 
                 execution.status = "failed"
 
@@ -531,13 +715,19 @@ def run_worker(
 
             job.last_error = str(exc)
 
+            # -------------------------------------------------
+            # RETRY
+            # -------------------------------------------------
+
             if (
                 job.attempts
                 < job.max_attempts
             ):
 
-                delay = calculate_retry_delay(
-                    job
+                delay = (
+                    calculate_retry_delay(
+                        job
+                    )
                 )
 
                 job.next_retry_at = (
@@ -554,16 +744,23 @@ def run_worker(
                     execution,
                     "ERROR",
                     (
-                        "Job failed. "
-                        f"Retrying in {delay} seconds."
+                        "Retry scheduled "
+                        f"after {delay} seconds"
                     )
                 )
 
+                db.session.commit()
+
                 print(
-                    f"Retrying job "
-                    f"{job.id} "
-                    f"in {delay} seconds"
+                    f"[RETRY] "
+                    f"Job {job.id} "
+                    f"in {delay}s"
                 )
+
+            # -------------------------------------------------
+            # STEP 19
+            # PERMANENT FAILURE
+            # -------------------------------------------------
 
             else:
 
@@ -575,15 +772,25 @@ def run_worker(
                     job,
                     execution,
                     "ERROR",
-                    "Maximum retry attempts reached"
+                    "Maximum attempts reached"
                 )
 
+                move_to_dead_letter(
+                    job,
+                    (
+                        "Maximum retry attempts "
+                        "reached: "
+                        f"{job.last_error}"
+                    )
+                )
+
+                db.session.commit()
+
                 print(
+                    f"[FAILED] "
                     f"Job {job.id} "
                     f"permanently failed"
                 )
-
-            db.session.commit()
 
 
 # =========================================================

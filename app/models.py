@@ -10,7 +10,12 @@ def utcnow():
     ).replace(tzinfo=None)
 
 
+# =========================================================
+# USER
+# =========================================================
+
 class User(db.Model):
+
     __tablename__ = "users"
 
     id = db.Column(
@@ -37,7 +42,12 @@ class User(db.Model):
     )
 
 
+# =========================================================
+# ORGANIZATION
+# =========================================================
+
 class Organization(db.Model):
+
     __tablename__ = "organizations"
 
     id = db.Column(
@@ -65,7 +75,12 @@ class Organization(db.Model):
     )
 
 
+# =========================================================
+# MEMBERSHIP
+# =========================================================
+
 class Membership(db.Model):
+
     __tablename__ = "memberships"
 
     id = db.Column(
@@ -103,7 +118,12 @@ class Membership(db.Model):
     )
 
 
+# =========================================================
+# PROJECT
+# =========================================================
+
 class Project(db.Model):
+
     __tablename__ = "projects"
 
     id = db.Column(
@@ -135,7 +155,12 @@ class Project(db.Model):
     )
 
 
+# =========================================================
+# QUEUE
+# =========================================================
+
 class Queue(db.Model):
+
     __tablename__ = "queues"
 
     id = db.Column(
@@ -161,6 +186,22 @@ class Queue(db.Model):
         nullable=False
     )
 
+    # =====================================================
+    # STEP 18
+    # =====================================================
+
+    concurrency_limit = db.Column(
+        db.Integer,
+        default=1,
+        nullable=False
+    )
+
+    starts_per_minute = db.Column(
+        db.Integer,
+        default=60,
+        nullable=False
+    )
+
     project = db.relationship(
         "Project",
         back_populates="queues"
@@ -173,7 +214,12 @@ class Queue(db.Model):
     )
 
 
+# =========================================================
+# JOB
+# =========================================================
+
 class Job(db.Model):
+
     __tablename__ = "jobs"
 
     id = db.Column(
@@ -239,6 +285,19 @@ class Job(db.Model):
         nullable=True
     )
 
+    # =====================================================
+    # STEP 17 — SCHEDULING
+    # =====================================================
+
+    run_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
+
+    # =====================================================
+    # WORKER
+    # =====================================================
+
     assigned_worker_id = db.Column(
         db.String(36),
         db.ForeignKey("workers.id"),
@@ -255,9 +314,9 @@ class Job(db.Model):
         nullable=True
     )
 
-    # ---------------------------------------------
-    # STEP 16: IDEMPOTENCY
-    # ---------------------------------------------
+    # =====================================================
+    # STEP 16 — IDEMPOTENCY
+    # =====================================================
 
     idempotency_key = db.Column(
         db.String(255),
@@ -299,8 +358,20 @@ class Job(db.Model):
         cascade="all, delete-orphan"
     )
 
+    dead_letter = db.relationship(
+        "DeadLetter",
+        back_populates="job",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+
+# =========================================================
+# WORKER
+# =========================================================
 
 class Worker(db.Model):
+
     __tablename__ = "workers"
 
     id = db.Column(
@@ -340,7 +411,12 @@ class Worker(db.Model):
     )
 
 
+# =========================================================
+# WORKER HEARTBEAT
+# =========================================================
+
 class WorkerHeartbeat(db.Model):
+
     __tablename__ = "worker_heartbeats"
 
     id = db.Column(
@@ -368,7 +444,12 @@ class WorkerHeartbeat(db.Model):
     )
 
 
+# =========================================================
+# JOB EXECUTION
+# =========================================================
+
 class JobExecution(db.Model):
+
     __tablename__ = "job_executions"
 
     id = db.Column(
@@ -432,7 +513,12 @@ class JobExecution(db.Model):
     )
 
 
+# =========================================================
+# JOB LOG
+# =========================================================
+
 class JobLog(db.Model):
+
     __tablename__ = "job_logs"
 
     id = db.Column(
@@ -477,5 +563,48 @@ class JobLog(db.Model):
 
     execution = db.relationship(
         "JobExecution",
-        back_populates="execution"
+        back_populates="logs"
+    )
+
+
+# =========================================================
+# STEP 19 — DEAD LETTER
+# =========================================================
+
+class DeadLetter(db.Model):
+
+    __tablename__ = "dead_letters"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    job_id = db.Column(
+        db.String(36),
+        db.ForeignKey("jobs.id"),
+        unique=True,
+        nullable=False
+    )
+
+    reason = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    attempts = db.Column(
+        db.Integer,
+        nullable=False
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=utcnow
+    )
+
+    job = db.relationship(
+        "Job",
+        back_populates="dead_letter"
     )
