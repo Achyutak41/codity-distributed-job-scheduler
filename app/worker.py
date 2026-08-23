@@ -1,8 +1,16 @@
 import time
+import datetime
+
+from flask import current_app
 
 from .extensions import db
-from .models import Job
-from .models import Job, Worker
+
+from .models import (
+    Job,
+    Worker,
+    JobExecution,
+    JobLog
+)
 
 
 def claim_next_job(worker_id):
@@ -50,31 +58,108 @@ def execute_job(job):
 
     print(f"Job {job.id} completed")
 
+
+def add_log(job, execution, level, message):
+    log = JobLog(
+        job_id=job.id,
+        execution_id=execution.id if execution else None,
+        level=level,
+        message=message
+    )
+
+    db.session.add(log)
+
+
 def run_worker(worker_id):
-    print("Worker started")
+    print(f"Worker started: {worker_id}")
 
     while True:
-        job = claim_next_job(worker_id)  # Replace with actual worker ID
+
+        job = claim_next_job(worker_id)
 
         if job is None:
             time.sleep(2)
             continue
 
-        job.status = "running"
-        db.session.commit()
-
         try:
+            # Increase attempt count
+            job.attempts += 1
+
+            # Create execution record
+            execution = JobExecution(
+                job_id=job.id,
+                worker_id=worker_id,
+                attempt=job.attempts,
+                status="running",
+                started_at=datetime.datetime.utcnow()
+            )
+
+            db.session.add(execution)
+
+            # Update job state
+            job.status = "running"
+
+            # Add starting log
+            add_log(
+                job,
+                execution,
+                "INFO",
+                "Job execution started"
+            )
+
+            db.session.commit()
+
+            # Execute the actual job
             execute_job(job)
 
+            # Successful execution
+            execution.status = "completed"
+
+            execution.finished_at = (
+                datetime.datetime.utcnow()
+            )
+
             job.status = "completed"
+
+            add_log(
+                job,
+                execution,
+                "INFO",
+                "Job execution completed"
+            )
+
             db.session.commit()
 
         except Exception as exc:
+
+            print(
+                f"Job {job.id} failed: {exc}"
+            )
+
+            execution.status = "failed"
+
+            execution.finished_at = (
+                datetime.datetime.utcnow()
+            )
+
+            execution.error = str(exc)
+
             job.status = "failed"
+
             job.last_error = str(exc)
+
+            add_log(
+                job,
+                execution,
+                "ERROR",
+                str(exc)
+            )
+
             db.session.commit()
 
+
 if __name__ == "__main__":
+
     import argparse
 
     from . import create_app
@@ -97,13 +182,17 @@ if __name__ == "__main__":
         ).first()
 
         if worker is None:
+
             worker = Worker(
                 name=args.name
             )
 
             db.session.add(worker)
+
             db.session.commit()
 
-        print(f"Worker started: {worker.name}")
+        print(
+            f"Worker started: {worker.name}"
+        )
 
         run_worker(worker.id)

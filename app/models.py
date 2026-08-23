@@ -1,5 +1,6 @@
 import uuid
 import datetime
+
 from .extensions import db
 
 
@@ -57,6 +58,77 @@ class Organization(db.Model):
         cascade="all, delete-orphan"
     )
 
+
+class Membership(db.Model):
+    __tablename__ = "memberships"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    user_id = db.Column(
+        db.String(36),
+        db.ForeignKey("users.id"),
+        nullable=False
+    )
+
+    organization_id = db.Column(
+        db.String(36),
+        db.ForeignKey("organizations.id"),
+        nullable=False
+    )
+
+    role = db.Column(
+        db.String(50),
+        nullable=False,
+        default="member"
+    )
+
+    user = db.relationship(
+        "User",
+        back_populates="memberships"
+    )
+
+    organization = db.relationship(
+        "Organization",
+        back_populates="memberships"
+    )
+
+
+class Project(db.Model):
+    __tablename__ = "projects"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    organization_id = db.Column(
+        db.String(36),
+        db.ForeignKey("organizations.id"),
+        nullable=False
+    )
+
+    name = db.Column(
+        db.String(150),
+        nullable=False
+    )
+
+    organization = db.relationship(
+        "Organization",
+        back_populates="projects"
+    )
+
+    queues = db.relationship(
+        "Queue",
+        back_populates="project",
+        cascade="all, delete-orphan"
+    )
+
+
 class Queue(db.Model):
     __tablename__ = "queues"
 
@@ -89,72 +161,11 @@ class Queue(db.Model):
     )
 
     jobs = db.relationship(
-    "Job",
-    back_populates="queue",
-    cascade="all, delete-orphan"
-)
-
-class Membership(db.Model):
-    __tablename__ = "memberships"
-
-    id = db.Column(
-        db.String(36),
-        primary_key=True,
-        default=lambda: str(uuid.uuid4())
+        "Job",
+        back_populates="queue",
+        cascade="all, delete-orphan"
     )
 
-    user_id = db.Column(
-        db.String(36),
-        db.ForeignKey("users.id"),
-        nullable=False
-    )
-
-    organization_id = db.Column(
-        db.String(36),
-        db.ForeignKey("organizations.id"),
-        nullable=False
-    )
-
-    user = db.relationship(
-        "User",
-        back_populates="memberships"
-    )
-
-    organization = db.relationship(
-        "Organization",
-        back_populates="memberships"
-    )
-
-class Project(db.Model):
-    __tablename__ = "projects"
-
-    id = db.Column(
-        db.String(36),
-        primary_key=True,
-        default=lambda: str(uuid.uuid4())
-    )
-
-    organization_id = db.Column(
-        db.String(36),
-        db.ForeignKey("organizations.id"),
-        nullable=False
-    )
-
-    name = db.Column(
-        db.String(150),
-        nullable=False
-    )
-
-    organization = db.relationship(
-        "Organization",
-        back_populates="projects"
-    )
-
-    queues = db.relationship(
-    "Queue",
-    back_populates="project",
-    cascade="all, delete-orphan"
-)
 
 class Job(db.Model):
     __tablename__ = "jobs"
@@ -238,6 +249,19 @@ class Job(db.Model):
         back_populates="jobs"
     )
 
+    executions = db.relationship(
+        "JobExecution",
+        back_populates="job",
+        cascade="all, delete-orphan"
+    )
+
+    logs = db.relationship(
+        "JobLog",
+        back_populates="job",
+        cascade="all, delete-orphan"
+    )
+
+
 class Worker(db.Model):
     __tablename__ = "workers"
 
@@ -262,4 +286,123 @@ class Worker(db.Model):
     jobs = db.relationship(
         "Job",
         back_populates="assigned_worker"
+    )
+
+    executions = db.relationship(
+        "JobExecution",
+        back_populates="worker",
+        cascade="all, delete-orphan"
+    )
+
+
+class JobExecution(db.Model):
+    __tablename__ = "job_executions"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    job_id = db.Column(
+        db.String(36),
+        db.ForeignKey("jobs.id"),
+        nullable=False
+    )
+
+    worker_id = db.Column(
+        db.String(36),
+        db.ForeignKey("workers.id"),
+        nullable=False
+    )
+
+    attempt = db.Column(
+        db.Integer,
+        nullable=False
+    )
+
+    status = db.Column(
+        db.String(30),
+        nullable=False
+    )
+
+    started_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.datetime.utcnow
+    )
+
+    finished_at = db.Column(
+        db.DateTime,
+        nullable=True
+    )
+
+    error = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    job = db.relationship(
+        "Job",
+        back_populates="executions"
+    )
+
+    worker = db.relationship(
+        "Worker",
+        back_populates="executions"
+    )
+
+    logs = db.relationship(
+        "JobLog",
+        back_populates="execution",
+        cascade="all, delete-orphan"
+    )
+
+
+class JobLog(db.Model):
+    __tablename__ = "job_logs"
+
+    id = db.Column(
+        db.String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    job_id = db.Column(
+        db.String(36),
+        db.ForeignKey("jobs.id"),
+        nullable=False
+    )
+
+    execution_id = db.Column(
+        db.String(36),
+        db.ForeignKey("job_executions.id"),
+        nullable=True
+    )
+
+    level = db.Column(
+        db.String(20),
+        nullable=False,
+        default="INFO"
+    )
+
+    message = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.datetime.utcnow
+    )
+
+    job = db.relationship(
+        "Job",
+        back_populates="logs"
+    )
+
+    execution = db.relationship(
+        "JobExecution",
+        back_populates="logs"
     )
