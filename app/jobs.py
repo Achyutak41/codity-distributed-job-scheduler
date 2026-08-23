@@ -15,6 +15,240 @@ job_bp = Blueprint(
     __name__
 )
 
+# =========================================================
+# STEP 20
+# LIST JOBS
+# =========================================================
+
+@job_bp.route(
+    "/queues/<queue_id>/jobs",
+    methods=["GET"]
+)
+def list_jobs(queue_id):
+
+    user = get_current_user()
+
+    if not user:
+
+        return {
+            "error":
+                "authentication required"
+        }, 401
+
+    queue = Queue.query.get(
+        queue_id
+    )
+
+    if not queue:
+
+        return {
+            "error":
+                "queue not found"
+        }, 404
+
+    # -----------------------------------------------------
+    # Pagination
+    # -----------------------------------------------------
+
+    try:
+
+        page = int(
+            request.args.get(
+                "page",
+                1
+            )
+        )
+
+        per_page = int(
+            request.args.get(
+                "per_page",
+                10
+            )
+        )
+
+    except ValueError:
+
+        return {
+            "error":
+                "page and per_page must be integers"
+        }, 400
+
+    if page < 1:
+
+        return {
+            "error":
+                "page must be >= 1"
+        }, 400
+
+    if per_page < 1:
+
+        return {
+            "error":
+                "per_page must be >= 1"
+        }, 400
+
+    if per_page > 100:
+
+        per_page = 100
+
+    # -----------------------------------------------------
+    # Base query
+    # -----------------------------------------------------
+
+    query = (
+        Job.query
+        .filter(
+            Job.queue_id == queue_id
+        )
+    )
+
+    # -----------------------------------------------------
+    # Status filter
+    # -----------------------------------------------------
+
+    status = request.args.get(
+        "status"
+    )
+
+    if status:
+
+        query = query.filter(
+            Job.status == status
+        )
+
+    # -----------------------------------------------------
+    # Priority filter
+    # -----------------------------------------------------
+
+    priority = request.args.get(
+        "priority"
+    )
+
+    if priority:
+
+        try:
+
+            priority = int(priority)
+
+        except ValueError:
+
+            return {
+                "error":
+                    "priority must be an integer"
+            }, 400
+
+        query = query.filter(
+            Job.priority == priority
+        )
+
+    # -----------------------------------------------------
+    # Job type filter
+    # -----------------------------------------------------
+
+    job_type = request.args.get(
+        "type"
+    )
+
+    if job_type:
+
+        query = query.filter(
+            Job.job_type == job_type
+        )
+
+    # -----------------------------------------------------
+    # Sort newest first
+    # -----------------------------------------------------
+
+    query = query.order_by(
+        Job.created_at.desc()
+    )
+
+    # -----------------------------------------------------
+    # Pagination
+    # -----------------------------------------------------
+
+    pagination = query.paginate(
+        page=page,
+        per_page=per_page,
+        error_out=False
+    )
+
+    jobs = []
+
+    for job in pagination.items:
+
+        jobs.append({
+
+            "id":
+                job.id,
+
+            "queue_id":
+                job.queue_id,
+
+            "type":
+                job.job_type,
+
+            "payload":
+                job.payload,
+
+            "priority":
+                job.priority,
+
+            "status":
+                job.status,
+
+            "attempts":
+                job.attempts,
+
+            "max_attempts":
+                job.max_attempts,
+
+            "run_at":
+                (
+                    job.run_at.isoformat()
+                    if job.run_at
+                    else None
+                ),
+
+            "assigned_worker_id":
+                job.assigned_worker_id,
+
+            "last_error":
+                job.last_error,
+
+            "created_at":
+                job.created_at.isoformat()
+
+        })
+
+    return {
+
+        "jobs":
+            jobs,
+
+        "pagination": {
+
+            "page":
+                pagination.page,
+
+            "per_page":
+                pagination.per_page,
+
+            "total":
+                pagination.total,
+
+            "pages":
+                pagination.pages,
+
+            "has_next":
+                pagination.has_next,
+
+            "has_previous":
+                pagination.has_prev
+        }
+
+    }, 200
+
 
 @job_bp.route(
     "/queues/<queue_id>/jobs",

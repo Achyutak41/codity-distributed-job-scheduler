@@ -20,6 +20,7 @@ from .organizations import organization_bp
 from .projects import project_bp
 from .queues import queue_bp
 from .jobs import job_bp
+from .metrics import metrics_bp
 
 
 def create_app():
@@ -63,6 +64,9 @@ def create_app():
     app.register_blueprint(
         job_bp
     )
+    app.register_blueprint(
+    metrics_bp
+)
 
     @app.route("/")
     def home():

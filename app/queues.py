@@ -7,6 +7,103 @@ from .auth import get_current_user
 
 queue_bp = Blueprint("queues", __name__)
 
+# =========================================================
+# STEP 22
+# PAUSE QUEUE
+# =========================================================
+
+@queue_bp.route(
+    "/queues/<queue_id>/pause",
+    methods=["POST"]
+)
+def pause_queue(queue_id):
+
+    user = get_current_user()
+
+    if not user:
+
+        return {
+            "error":
+                "authentication required"
+        }, 401
+
+    queue = Queue.query.get(
+        queue_id
+    )
+
+    if not queue:
+
+        return {
+            "error":
+                "queue not found"
+        }, 404
+
+    queue.paused = True
+
+    db.session.commit()
+
+    return {
+
+        "message":
+            "Queue paused successfully",
+
+        "queue_id":
+            queue.id,
+
+        "paused":
+            queue.paused
+
+    }, 200
+
+
+# =========================================================
+# RESUME QUEUE
+# =========================================================
+
+@queue_bp.route(
+    "/queues/<queue_id>/resume",
+    methods=["POST"]
+)
+def resume_queue(queue_id):
+
+    user = get_current_user()
+
+    if not user:
+
+        return {
+            "error":
+                "authentication required"
+        }, 401
+
+    queue = Queue.query.get(
+        queue_id
+    )
+
+    if not queue:
+
+        return {
+            "error":
+                "queue not found"
+        }, 404
+
+    queue.paused = False
+
+    db.session.commit()
+
+    return {
+
+        "message":
+            "Queue resumed successfully",
+
+        "queue_id":
+            queue.id,
+
+        "paused":
+            queue.paused
+
+    }, 200
+
+
 @queue_bp.route(
     "/projects/<project_id>/queues",
     methods=["POST"]
